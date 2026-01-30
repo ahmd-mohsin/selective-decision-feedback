@@ -1,0 +1,19 @@
+name: rc_flow_env
+channels:
+  - pytorch
+  - defaults
+dependencies:
+  - python=3.9
+  - pytorch
+  - torchvision
+  - torchaudio
+  - cpuonly  # Remove this line if you have an NVIDIA GPU and want CUDA support
+  - numpy
+  - scipy
+  - matplotlib
+  - pyyaml
+  - tqdm
+  - pip
+  - pip:
+      - jupyter   # For running notebooks/tests
+      - ipykernel

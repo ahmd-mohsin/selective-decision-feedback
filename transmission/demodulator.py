@@ -1,8 +1,10 @@
 # transmission/demodulator.py
 
 import numpy as np
+from typing import Tuple
 from .constellation import QAMConstellation
 from .config import SystemConfig
+
 
 class Demodulator:
     def __init__(self, config: SystemConfig):

@@ -146,6 +146,7 @@ activemq-data/
 
 # SageMath parsed files
 *.sage.py
+*.npy
 
 # Environments
 .env
@@ -174,7 +175,7 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
-
+.npy/
 # pytype static type analyzer
 .pytype/
 

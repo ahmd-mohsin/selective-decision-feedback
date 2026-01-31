@@ -1,9 +1,8 @@
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, TensorDataset
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 from .flow_matching import FlowMatching
-from .projector import PhysicsProjector
 from .config import RCFlowConfig
 
 
@@ -13,21 +12,24 @@ class RCFlowTrainer:
         self.device = torch.device(config.device)
 
         self.flow = FlowMatching(config).to(self.device)
-        self.projector = PhysicsProjector(config).to(self.device)
 
         self.optimizer = torch.optim.AdamW(
             self.flow.parameters(),
             lr=config.learning_rate,
-            weight_decay=1e-4
+            weight_decay=1e-5,
+            betas=(0.9, 0.999)
         )
 
-        self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-            self.optimizer, T_max=config.num_epochs, eta_min=1e-6
+        self.scheduler = torch.optim.lr_scheduler.OneCycleLR(
+            self.optimizer,
+            max_lr=config.learning_rate,
+            total_steps=config.num_epochs * 100,
+            pct_start=0.1,
+            anneal_strategy='cos'
         )
 
         self.best_val_nmse = float('inf')
         self.best_state = None
-        self.patience_counter = 0
 
     def complex_to_real(self, H: torch.Tensor) -> torch.Tensor:
         return torch.cat([H.real, H.imag], dim=-1).reshape(H.shape[0], -1)
@@ -37,75 +39,91 @@ class RCFlowTrainer:
         x = x.reshape(batch_size, self.config.Nr, self.config.Nt, 2)
         return torch.complex(x[..., 0], x[..., 1])
 
-    def train_epoch(self, dataloader: DataLoader) -> float:
+    def train_epoch(
+        self,
+        H_true: torch.Tensor,
+        pilot_mask: torch.Tensor
+    ) -> float:
         self.flow.train()
-        total_loss = 0.0
 
-        for batch in dataloader:
-            H_batch = batch[0].to(self.device)
+        batch_size = self.config.batch_size
+        num_samples = H_true.shape[0]
+        indices = torch.randperm(num_samples)
+
+        total_loss = 0.0
+        num_batches = 0
+
+        for start in range(0, num_samples, batch_size):
+            end = min(start + batch_size, num_samples)
+            batch_idx = indices[start:end]
+
+            H_batch = H_true[batch_idx].to(self.device)
+            mask_batch = pilot_mask[batch_idx].to(self.device)
+
             H_flat = self.complex_to_real(H_batch)
 
+            H_noisy = self.add_noise(H_batch)
+            H_obs = torch.zeros_like(H_noisy)
+            H_obs[mask_batch] = H_noisy[mask_batch]
+            H_obs_flat = self.complex_to_real(H_obs)
+
+            mask_flat = torch.cat([mask_batch, mask_batch], dim=-1).reshape(H_batch.shape[0], -1).float()
+
             self.optimizer.zero_grad()
-            loss = self.flow.training_step(H_flat)
+            loss = self.flow.training_step(H_flat, H_obs_flat, mask_flat)
             loss.backward()
 
             torch.nn.utils.clip_grad_norm_(self.flow.parameters(), max_norm=1.0)
             self.optimizer.step()
+            self.scheduler.step()
 
             total_loss += loss.item()
+            num_batches += 1
 
-        return total_loss / len(dataloader)
+        return total_loss / num_batches
 
     def train(
         self,
-        train_data: torch.Tensor,
-        val_data: Optional[torch.Tensor] = None,
-        val_mask: Optional[torch.Tensor] = None,
-        num_epochs: Optional[int] = None,
-        early_stopping_patience: int = 40
+        train_H: torch.Tensor,
+        train_mask: torch.Tensor,
+        val_H: torch.Tensor = None,
+        val_mask: torch.Tensor = None,
+        num_epochs: Optional[int] = None
     ) -> Dict[str, List[float]]:
         if num_epochs is None:
             num_epochs = self.config.num_epochs
 
-        train_dataset = TensorDataset(train_data)
-        train_loader = DataLoader(
-            train_dataset,
-            batch_size=self.config.batch_size,
-            shuffle=True
+        total_steps = num_epochs * (len(train_H) // self.config.batch_size + 1)
+        self.scheduler = torch.optim.lr_scheduler.OneCycleLR(
+            self.optimizer,
+            max_lr=self.config.learning_rate,
+            total_steps=total_steps,
+            pct_start=0.1,
+            anneal_strategy='cos'
         )
 
         history = {'train_loss': [], 'val_nmse': []}
         self.best_val_nmse = float('inf')
-        self.patience_counter = 0
 
         for epoch in range(num_epochs):
-            train_loss = self.train_epoch(train_loader)
+            train_loss = self.train_epoch(train_H, train_mask)
             history['train_loss'].append(train_loss)
 
-            self.scheduler.step()
-
-            if val_data is not None and (epoch + 1) % 5 == 0:
-                val_nmse = self.evaluate(val_data, val_mask)
+            if val_H is not None and (epoch + 1) % 5 == 0:
+                val_nmse = self.evaluate(val_H, val_mask)
                 history['val_nmse'].append(val_nmse)
 
                 if val_nmse < self.best_val_nmse:
                     self.best_val_nmse = val_nmse
                     self.best_state = {k: v.cpu().clone() for k, v in self.flow.state_dict().items()}
-                    self.patience_counter = 0
                     marker = " *"
                 else:
-                    self.patience_counter += 1
                     marker = ""
 
                 lr = self.optimizer.param_groups[0]['lr']
                 print(f"Epoch {epoch+1}/{num_epochs} | Loss: {train_loss:.6f} | Val NMSE: {val_nmse:.2f} dB | LR: {lr:.2e}{marker}")
-
-                if self.patience_counter >= early_stopping_patience // 5:
-                    print(f"Early stopping at epoch {epoch+1}")
-                    break
-            else:
-                if (epoch + 1) % 10 == 0:
-                    print(f"Epoch {epoch+1}/{num_epochs} | Loss: {train_loss:.6f}")
+            elif (epoch + 1) % 10 == 0:
+                print(f"Epoch {epoch+1}/{num_epochs} | Loss: {train_loss:.6f}")
 
         if self.best_state is not None:
             print(f"\nRestoring best model with Val NMSE: {self.best_val_nmse:.2f} dB")
@@ -124,28 +142,22 @@ class RCFlowTrainer:
             num_steps = self.config.num_flow_steps
 
         self.flow.eval()
-        device = self.device
 
-        H_observed = H_observed.to(device)
-        pilot_mask = pilot_mask.to(device)
+        H_observed = H_observed.to(self.device)
+        pilot_mask = pilot_mask.to(self.device)
 
         batch_size = H_observed.shape[0]
 
-        x = torch.randn(batch_size, self.config.channel_dim, device=device)
-
         H_obs_flat = self.complex_to_real(H_observed)
-        mask_flat = torch.cat([pilot_mask, pilot_mask], dim=-1).reshape(batch_size, -1)
+        mask_flat = torch.cat([pilot_mask, pilot_mask], dim=-1).reshape(batch_size, -1).float()
 
-        dt = 1.0 / num_steps
-        lambda_g = self.config.lambda_proj
-
-        for i in range(num_steps):
-            t = torch.full((batch_size,), i * dt, device=device)
-            v = self.flow.network(x, t)
-            x = x + v * dt
-
-            strength = lambda_g * min(1.0, (i + 1) / (num_steps * 0.5))
-            x = torch.where(mask_flat, (1 - strength) * x + strength * H_obs_flat, x)
+        x = self.flow.sample(
+            batch_size,
+            self.device,
+            obs=H_obs_flat,
+            mask=mask_flat,
+            num_steps=num_steps
+        )
 
         H_est = self.real_to_complex(x)
         H_est = torch.where(pilot_mask, H_observed, H_est)
@@ -153,20 +165,8 @@ class RCFlowTrainer:
         return H_est
 
     @torch.no_grad()
-    def evaluate(
-        self,
-        H_true: torch.Tensor,
-        pilot_mask: Optional[torch.Tensor] = None
-    ) -> float:
+    def evaluate(self, H_true: torch.Tensor, pilot_mask: torch.Tensor) -> float:
         self.flow.eval()
-
-        if pilot_mask is None:
-            batch_size = H_true.shape[0]
-            pilot_mask = torch.zeros(batch_size, self.config.Nr, self.config.Nt, dtype=torch.bool)
-            for b in range(batch_size):
-                pos = torch.randperm(self.config.total_elements)[:self.config.Np]
-                rows, cols = pos // self.config.Nt, pos % self.config.Nt
-                pilot_mask[b, rows, cols] = True
 
         H_noisy = self.add_noise(H_true)
         H_observed = torch.zeros_like(H_noisy)
@@ -188,8 +188,7 @@ class RCFlowTrainer:
     def compute_nmse(self, H_est: torch.Tensor, H_true: torch.Tensor) -> float:
         mse = torch.mean(torch.abs(H_est - H_true) ** 2)
         power = torch.mean(torch.abs(H_true) ** 2)
-        nmse = mse / power
-        return 10 * torch.log10(nmse).item()
+        return 10 * torch.log10(mse / power).item()
 
     def save(self, path: str):
         torch.save({

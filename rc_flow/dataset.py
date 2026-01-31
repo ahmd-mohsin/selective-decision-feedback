@@ -5,30 +5,39 @@ from .config import RCFlowConfig
 
 
 class ChannelDataset:
-    def __init__(self, config: RCFlowConfig):
+    def __init__(self, config: RCFlowConfig, num_angles: int = 8):
         self.config = config
         self.Nr = config.Nr
         self.Nt = config.Nt
         self.Np = config.Np
+        self.num_angles = num_angles
 
-    def generate_channel(self, batch_size: int, num_paths: int = 5) -> torch.Tensor:
+        self.angle_grid_tx = torch.linspace(-np.pi/2, np.pi/2, num_angles)
+        self.angle_grid_rx = torch.linspace(-np.pi/2, np.pi/2, num_angles)
+
+        self.A_tx = self._create_steering_matrix(self.Nt, self.angle_grid_tx)
+        self.A_rx = self._create_steering_matrix(self.Nr, self.angle_grid_rx)
+
+    def _create_steering_matrix(self, num_antennas: int, angles: torch.Tensor) -> torch.Tensor:
+        n = torch.arange(num_antennas).float()
+        A = torch.exp(1j * np.pi * n.unsqueeze(1) * torch.sin(angles).unsqueeze(0))
+        return A
+
+    def generate_channel(self, batch_size: int, sparsity: int = 3) -> torch.Tensor:
         H = torch.zeros(batch_size, self.Nr, self.Nt, dtype=torch.complex64)
 
-        for _ in range(num_paths):
-            aod = torch.rand(batch_size) * 2 * np.pi
-            aoa = torch.rand(batch_size) * 2 * np.pi
+        for b in range(batch_size):
+            tx_indices = torch.randperm(self.num_angles)[:sparsity]
+            rx_indices = torch.randperm(self.num_angles)[:sparsity]
 
-            a_tx = torch.exp(1j * np.pi * torch.arange(self.Nt).float().unsqueeze(0) *
-                           torch.sin(aod).unsqueeze(1))
-            a_rx = torch.exp(1j * np.pi * torch.arange(self.Nr).float().unsqueeze(0) *
-                           torch.sin(aoa).unsqueeze(1))
+            for i in range(sparsity):
+                gain = (torch.randn(1) + 1j * torch.randn(1)) / np.sqrt(2)
+                a_tx = self.A_tx[:, tx_indices[i]]
+                a_rx = self.A_rx[:, rx_indices[i]]
+                H[b] += gain * torch.outer(a_rx, a_tx.conj())
 
-            gain = (torch.randn(batch_size) + 1j * torch.randn(batch_size)) / np.sqrt(2)
+            H[b] = H[b] / torch.sqrt(torch.mean(torch.abs(H[b]) ** 2))
 
-            H_path = gain.unsqueeze(1).unsqueeze(2) * a_rx.unsqueeze(2) * a_tx.unsqueeze(1).conj()
-            H = H + H_path / np.sqrt(num_paths)
-
-        H = H / torch.sqrt(torch.mean(torch.abs(H) ** 2, dim=(1, 2), keepdim=True))
         return H
 
     def add_noise(self, H: torch.Tensor, snr_db: float = None) -> torch.Tensor:
@@ -45,31 +54,38 @@ class ChannelDataset:
         return H + noise
 
     def generate_pilot_mask(self, batch_size: int) -> torch.Tensor:
-        mask = torch.zeros(batch_size, self.Nt, dtype=torch.bool)
-        pilot_indices = torch.randperm(self.Nt)[:self.Np]
-        mask[:, pilot_indices] = True
+        total_elements = self.Nr * self.Nt
+        num_pilots = self.Np
+
+        mask = torch.zeros(batch_size, self.Nr, self.Nt, dtype=torch.bool)
+
+        for b in range(batch_size):
+            pilot_positions = torch.randperm(total_elements)[:num_pilots]
+            rows = pilot_positions // self.Nt
+            cols = pilot_positions % self.Nt
+            mask[b, rows, cols] = True
+
         return mask
 
-    def extract_pilot_observations(
+    def create_observation(
         self,
-        H: torch.Tensor,
+        H_noisy: torch.Tensor,
         pilot_mask: torch.Tensor
     ) -> torch.Tensor:
-        H_observed = torch.zeros_like(H)
-        mask_expanded = pilot_mask.unsqueeze(1).expand_as(H)
-        H_observed[mask_expanded] = H[mask_expanded]
+        H_observed = torch.zeros_like(H_noisy)
+        H_observed[pilot_mask] = H_noisy[pilot_mask]
         return H_observed
 
     def generate_dataset(self, num_samples: int) -> Dict[str, torch.Tensor]:
         H_true = self.generate_channel(num_samples)
         pilot_mask = self.generate_pilot_mask(num_samples)
         H_noisy = self.add_noise(H_true)
-        H_pilot_obs = self.extract_pilot_observations(H_noisy, pilot_mask)
+        H_observed = self.create_observation(H_noisy, pilot_mask)
 
         return {
             'H_true': H_true,
             'H_noisy': H_noisy,
-            'H_pilot_obs': H_pilot_obs,
+            'H_observed': H_observed,
             'pilot_mask': pilot_mask
         }
 

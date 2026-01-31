@@ -19,18 +19,20 @@ class SinusoidalTimeEmbedding(nn.Module):
 
 
 class ResidualBlock(nn.Module):
-    def __init__(self, dim: int, time_dim: int):
+    def __init__(self, dim: int, time_dim: int, dropout: float = 0.1):
         super().__init__()
         self.time_mlp = nn.Linear(time_dim, dim)
         self.block1 = nn.Sequential(
             nn.LayerNorm(dim),
             nn.SiLU(),
-            nn.Linear(dim, dim)
+            nn.Linear(dim, dim),
+            nn.Dropout(dropout)
         )
         self.block2 = nn.Sequential(
             nn.LayerNorm(dim),
             nn.SiLU(),
-            nn.Linear(dim, dim)
+            nn.Linear(dim, dim),
+            nn.Dropout(dropout)
         )
 
     def forward(self, x: torch.Tensor, t_emb: torch.Tensor) -> torch.Tensor:
@@ -41,7 +43,7 @@ class ResidualBlock(nn.Module):
 
 
 class FlowNetwork(nn.Module):
-    def __init__(self, input_dim: int, hidden_dim: int = 128, num_layers: int = 4):
+    def __init__(self, input_dim: int, hidden_dim: int = 128, num_layers: int = 4, dropout: float = 0.1):
         super().__init__()
         self.input_dim = input_dim
         self.hidden_dim = hidden_dim
@@ -57,7 +59,7 @@ class FlowNetwork(nn.Module):
         self.input_proj = nn.Linear(input_dim, hidden_dim)
 
         self.layers = nn.ModuleList([
-            ResidualBlock(hidden_dim, time_dim) for _ in range(num_layers)
+            ResidualBlock(hidden_dim, time_dim, dropout) for _ in range(num_layers)
         ])
 
         self.output_proj = nn.Sequential(

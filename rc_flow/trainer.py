@@ -22,7 +22,7 @@ class RCFlowTrainer:
         )
 
         self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-            self.optimizer, mode='min', factor=0.5, patience=10, verbose=True
+            self.optimizer, mode='min', factor=0.5, patience=10, verbose=False
         )
 
         self.best_val_nmse = float('inf')
@@ -57,7 +57,7 @@ class RCFlowTrainer:
         train_data: torch.Tensor,
         val_data: Optional[torch.Tensor] = None,
         num_epochs: Optional[int] = None,
-        early_stopping_patience: int = 20
+        early_stopping_patience: int = 30
     ) -> Dict[str, List[float]]:
         if num_epochs is None:
             num_epochs = self.config.num_epochs
@@ -86,8 +86,7 @@ class RCFlowTrainer:
                 if val_nmse < self.best_val_nmse:
                     self.best_val_nmse = val_nmse
                     self.best_state = {
-                        'flow': self.flow.state_dict(),
-                        'optimizer': self.optimizer.state_dict()
+                        'flow': {k: v.cpu().clone() for k, v in self.flow.state_dict().items()},
                     }
                     self.patience_counter = 0
                     marker = " *"
@@ -114,10 +113,10 @@ class RCFlowTrainer:
         self,
         H_noisy: torch.Tensor,
         pilot_mask: torch.Tensor,
-        num_iterations: Optional[int] = None
+        num_steps: Optional[int] = None
     ) -> torch.Tensor:
-        if num_iterations is None:
-            num_iterations = self.config.num_outer_iterations
+        if num_steps is None:
+            num_steps = self.config.num_flow_steps
 
         self.flow.eval()
         device = self.device
@@ -126,28 +125,32 @@ class RCFlowTrainer:
         pilot_mask = pilot_mask.to(device)
 
         batch_size = H_noisy.shape[0]
-        H_est = self.flow.sample(batch_size, device, num_steps=self.config.num_flow_steps)
-        H_est_complex = self.projector.real_to_complex(H_est)
 
-        H_noisy_complex = H_noisy
+        x = torch.randn(batch_size, self.config.channel_dim, device=device)
 
-        for outer_iter in range(num_iterations):
-            lambda_val = self.config.lambda_proj * (outer_iter + 1) / num_iterations
+        H_noisy_flat = self.prepare_data(H_noisy)
+        mask_flat = pilot_mask.unsqueeze(1).expand(batch_size, self.config.Nr, self.config.Nt)
+        mask_flat = torch.cat([mask_flat, mask_flat], dim=-1).reshape(batch_size, -1)
 
-            H_projected = self.projector.project_simple(
-                H_est_complex, H_noisy_complex, pilot_mask, lambda_reg=lambda_val
-            )
+        dt = 1.0 / num_steps
+        lambda_guidance = self.config.lambda_proj
 
-            H_projected_flat = self.prepare_data(H_projected)
-            H_refined = self.flow.denoise(H_projected_flat, start_t=0.2)
-            H_est_complex = self.projector.real_to_complex(H_refined)
+        for i in range(num_steps):
+            t = torch.full((batch_size,), i * dt, device=device)
 
-            beta = self.config.beta_anchor
-            H_est_complex = (1 - beta) * H_est_complex + beta * H_noisy_complex
-            mask_expanded = pilot_mask.unsqueeze(1).expand_as(H_est_complex)
-            H_est_complex = torch.where(mask_expanded, H_noisy_complex, H_est_complex)
+            velocity = self.flow.network(x, t)
 
-        return H_est_complex
+            x = x + velocity * dt
+
+            guidance_strength = lambda_guidance * (i + 1) / num_steps
+            x = torch.where(mask_flat, (1 - guidance_strength) * x + guidance_strength * H_noisy_flat, x)
+
+        H_est = self.projector.real_to_complex(x)
+
+        mask_2d = pilot_mask.unsqueeze(1).expand_as(H_est)
+        H_est = torch.where(mask_2d, H_noisy, H_est)
+
+        return H_est
 
     @torch.no_grad()
     def evaluate(self, H_true: torch.Tensor, pilot_mask: Optional[torch.Tensor] = None) -> float:

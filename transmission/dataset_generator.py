@@ -26,7 +26,8 @@ class DatasetGenerator:
         
         H_true = self.channel.generate_response()
         
-        received_grid = np.zeros_like(ofdm_grid, dtype=complex)
+        # Received grid has shape (Nr, T) - different from transmitted (Nt, T)
+        received_grid = np.zeros((self.config.Nr, self.config.num_data_symbols), dtype=complex)
         for t in range(self.config.num_data_symbols):
             transmitted = ofdm_grid[:, t]
             received_grid[:, t] = self.channel.apply(transmitted, H_true)

@@ -9,13 +9,15 @@ def main():
         Nt=3,
         Np=2,
         snr_db=10.0,
-        hidden_dim=128,
-        num_layers=4,
-        num_flow_steps=50,
-        num_outer_iterations=3,
-        learning_rate=1e-3,
-        batch_size=32,
-        num_epochs=100
+        hidden_dim=256,
+        num_layers=6,
+        num_flow_steps=100,
+        num_outer_iterations=5,
+        learning_rate=5e-4,
+        batch_size=64,
+        num_epochs=200,
+        lambda_proj=0.8,
+        beta_anchor=0.2
     )
 
     print("=" * 50)
@@ -32,9 +34,9 @@ def main():
     print("\nGenerating dataset...")
     dataset = ChannelDataset(config)
     train_data, val_data, test_data = dataset.generate_train_val_test(
-        num_train=5000,
-        num_val=500,
-        num_test=500
+        num_train=10000,
+        num_val=1000,
+        num_test=1000
     )
 
     print(f"Train samples: {train_data['H_true'].shape[0]}")
@@ -49,7 +51,8 @@ def main():
     history = trainer.train(
         train_data['H_true'],
         val_data['H_true'],
-        num_epochs=config.num_epochs
+        num_epochs=config.num_epochs,
+        early_stopping_patience=30
     )
 
     print("\n" + "=" * 50)
@@ -57,32 +60,30 @@ def main():
     print("=" * 50)
 
     test_nmse = trainer.evaluate(test_data['H_true'], test_data['pilot_mask'])
-    print(f"Test NMSE: {test_nmse:.2f} dB")
+    print(f"RC-Flow NMSE: {test_nmse:.2f} dB")
 
     print("\nComparing with baselines...")
     ls_nmse = compute_ls_baseline(test_data, config)
     print(f"LS Estimation NMSE: {ls_nmse:.2f} dB")
 
     oracle_nmse = compute_oracle_baseline(test_data, config)
-    print(f"Oracle (Perfect CSI) NMSE: {oracle_nmse:.2f} dB")
+    print(f"Oracle (Noisy Full CSI) NMSE: {oracle_nmse:.2f} dB")
+
+    interp_nmse = compute_interpolation_baseline(test_data, config)
+    print(f"Linear Interpolation NMSE: {interp_nmse:.2f} dB")
 
     print("\n" + "=" * 50)
-    print("Reconstruction Example")
+    print("Summary")
     print("=" * 50)
+    print(f"Oracle (Noisy):     {oracle_nmse:.2f} dB")
+    print(f"RC-Flow:            {test_nmse:.2f} dB")
+    print(f"Interpolation:      {interp_nmse:.2f} dB")
+    print(f"LS (Pilots only):   {ls_nmse:.2f} dB")
 
-    idx = 0
-    H_true = test_data['H_true'][idx:idx+1]
-    H_noisy = test_data['H_noisy'][idx:idx+1]
-    pilot_mask = test_data['pilot_mask'][idx:idx+1]
-
-    H_reconstructed = trainer.reconstruct(H_noisy, pilot_mask)
-
-    print(f"H_true (sample):\n{H_true[0, :2, :].numpy()}")
-    print(f"\nH_noisy (sample):\n{H_noisy[0, :2, :].numpy()}")
-    print(f"\nH_reconstructed (sample):\n{H_reconstructed[0, :2, :].cpu().numpy()}")
-
-    sample_nmse = trainer.compute_nmse(H_reconstructed, H_true.to(config.device))
-    print(f"\nSample NMSE: {sample_nmse:.2f} dB")
+    if test_nmse < interp_nmse:
+        print("\nRC-Flow outperforms interpolation baseline!")
+    else:
+        print("\nRC-Flow needs improvement to beat interpolation.")
 
     print("\nSaving model...")
     trainer.save("results/rcflow_model.pt")
@@ -109,6 +110,31 @@ def compute_oracle_baseline(data: dict, config: RCFlowConfig) -> float:
     H_noisy = data['H_noisy']
 
     error = torch.abs(H_noisy - H_true) ** 2
+    power = torch.abs(H_true) ** 2
+    nmse = torch.mean(error) / torch.mean(power)
+    return 10 * torch.log10(nmse).item()
+
+
+def compute_interpolation_baseline(data: dict, config: RCFlowConfig) -> float:
+    H_true = data['H_true']
+    H_noisy = data['H_noisy']
+    pilot_mask = data['pilot_mask']
+
+    batch_size = H_true.shape[0]
+    H_interp = torch.zeros_like(H_noisy)
+
+    for b in range(batch_size):
+        pilot_indices = torch.where(pilot_mask[b])[0]
+        if len(pilot_indices) == 0:
+            continue
+
+        for rx in range(config.Nr):
+            pilot_values = H_noisy[b, rx, pilot_indices]
+            mean_value = pilot_values.mean()
+            H_interp[b, rx, :] = mean_value
+            H_interp[b, rx, pilot_indices] = pilot_values
+
+    error = torch.abs(H_interp - H_true) ** 2
     power = torch.abs(H_true) ** 2
     nmse = torch.mean(error) / torch.mean(power)
     return 10 * torch.log10(nmse).item()

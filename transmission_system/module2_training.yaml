@@ -1,0 +1,31 @@
+seed: 42
+
+Nfft: 64
+Ncp: 16
+Nsym: 100
+
+pilot_spacing: 4
+
+Nt: 1
+Nr: 1
+
+modulation_order: 16
+constellation_type: 'qam'
+
+snr_db: 20.0
+
+channel_model: 'rayleigh'
+num_taps: 6
+
+doppler_hz: 100.0
+carrier_freq_ghz: 2.4
+symbol_rate_khz: 1000.0
+
+time_varying: true
+block_fading: false
+
+num_samples_train: 50000
+num_samples_val: 5000
+num_samples_test: 5000
+
+dataset_path: './datasets/diffusion_training'

@@ -1,5 +1,4 @@
 import torch
-import numpy as np
 from rc_flow import RCFlowConfig, RCFlowTrainer, ChannelDataset
 
 
@@ -7,137 +6,109 @@ def main():
     config = RCFlowConfig(
         Nr=4,
         Nt=3,
-        Np=2,
+        Np=6,
         snr_db=10.0,
-        hidden_dim=256,
-        num_layers=6,
+        hidden_dim=512,
+        num_layers=12,
         num_flow_steps=100,
-        num_outer_iterations=5,
-        learning_rate=5e-4,
+        learning_rate=1e-3,
         batch_size=64,
-        num_epochs=200,
-        lambda_proj=0.8,
-        beta_anchor=0.2
+        num_epochs=300
     )
 
-    print("=" * 50)
-    print("RC-Flow Channel Estimation")
-    print("=" * 50)
-    print(f"Nr (Rx antennas): {config.Nr}")
-    print(f"Nt (Users/Tx): {config.Nt}")
-    print(f"Np (Pilots): {config.Np}")
-    print(f"Pilot density: {config.pilot_density:.1%}")
+    print("=" * 60)
+    print("RC-Flow Channel Estimation (Heavy Network)")
+    print("=" * 60)
+    print(f"Channel: {config.Nr} x {config.Nt} = {config.total_elements} elements")
+    print(f"Pilots: {config.Np} ({config.pilot_density:.1%} density)")
     print(f"SNR: {config.snr_db} dB")
+    print(f"Network: {config.hidden_dim} hidden, {config.num_layers} layers")
     print(f"Device: {config.device}")
-    print("=" * 50)
+    print("=" * 60)
 
-    print("\nGenerating dataset...")
-    dataset = ChannelDataset(config)
+    print("\n[1] Generating dataset...")
+    dataset = ChannelDataset(config, num_angles=8)
     train_data, val_data, test_data = dataset.generate_train_val_test(
-        num_train=10000,
-        num_val=1000,
-        num_test=1000
+        num_train=20000,
+        num_val=2000,
+        num_test=2000
     )
+    print(f"    Train: {train_data['H_true'].shape[0]}")
+    print(f"    Val:   {val_data['H_true'].shape[0]}")
+    print(f"    Test:  {test_data['H_true'].shape[0]}")
 
-    print(f"Train samples: {train_data['H_true'].shape[0]}")
-    print(f"Val samples: {val_data['H_true'].shape[0]}")
-    print(f"Test samples: {test_data['H_true'].shape[0]}")
-    print(f"Channel shape: {train_data['H_true'].shape[1:]}")
-
-    print("\nInitializing trainer...")
+    print("\n[2] Initializing trainer...")
     trainer = RCFlowTrainer(config)
 
-    print("\nTraining flow matching model...")
+    num_params = sum(p.numel() for p in trainer.flow.parameters())
+    print(f"    Model parameters: {num_params:,}")
+
+    print("\n[3] Training...")
+    print("-" * 60)
     history = trainer.train(
         train_data['H_true'],
+        train_data['pilot_mask'],
         val_data['H_true'],
-        num_epochs=config.num_epochs,
-        early_stopping_patience=30
+        val_data['pilot_mask'],
+        num_epochs=config.num_epochs
     )
 
-    print("\n" + "=" * 50)
-    print("Evaluation on Test Set")
-    print("=" * 50)
+    print("\n" + "=" * 60)
+    print("EVALUATION")
+    print("=" * 60)
 
-    test_nmse = trainer.evaluate(test_data['H_true'], test_data['pilot_mask'])
-    print(f"RC-Flow NMSE: {test_nmse:.2f} dB")
+    H_true = test_data['H_true']
+    H_noisy = test_data['H_noisy']
+    pilot_mask = test_data['pilot_mask']
 
-    print("\nComparing with baselines...")
-    ls_nmse = compute_ls_baseline(test_data, config)
-    print(f"LS Estimation NMSE: {ls_nmse:.2f} dB")
+    H_observed = torch.zeros_like(H_noisy)
+    H_observed[pilot_mask] = H_noisy[pilot_mask]
 
-    oracle_nmse = compute_oracle_baseline(test_data, config)
-    print(f"Oracle (Noisy Full CSI) NMSE: {oracle_nmse:.2f} dB")
+    print("\n[4] Baselines:")
+    oracle = compute_nmse(H_noisy, H_true)
+    print(f"    Oracle (full noisy):  {oracle:.2f} dB")
 
-    interp_nmse = compute_interpolation_baseline(test_data, config)
-    print(f"Linear Interpolation NMSE: {interp_nmse:.2f} dB")
+    zero_fill = compute_nmse(H_observed, H_true)
+    print(f"    Zero-fill:            {zero_fill:.2f} dB")
 
-    print("\n" + "=" * 50)
-    print("Summary")
-    print("=" * 50)
-    print(f"Oracle (Noisy):     {oracle_nmse:.2f} dB")
-    print(f"RC-Flow:            {test_nmse:.2f} dB")
-    print(f"Interpolation:      {interp_nmse:.2f} dB")
-    print(f"LS (Pilots only):   {ls_nmse:.2f} dB")
+    mean_fill = compute_mean_fill(H_observed, pilot_mask)
+    mean_nmse = compute_nmse(mean_fill, H_true)
+    print(f"    Mean-fill:            {mean_nmse:.2f} dB")
 
-    if test_nmse < interp_nmse:
-        print("\nRC-Flow outperforms interpolation baseline!")
-    else:
-        print("\nRC-Flow needs improvement to beat interpolation.")
+    print("\n[5] RC-Flow:")
+    H_rcflow = trainer.reconstruct(H_observed, pilot_mask)
+    rcflow_nmse = compute_nmse(H_rcflow.cpu(), H_true)
+    print(f"    RC-Flow:              {rcflow_nmse:.2f} dB")
 
-    print("\nSaving model...")
+    print("\n" + "=" * 60)
+    print("SUMMARY")
+    print("=" * 60)
+    print(f"    Oracle:     {oracle:.2f} dB")
+    print(f"    RC-Flow:    {rcflow_nmse:.2f} dB")
+    print(f"    Mean-fill:  {mean_nmse:.2f} dB")
+    print(f"    Zero-fill:  {zero_fill:.2f} dB")
+
+    if rcflow_nmse < mean_nmse:
+        print("\n    >>> RC-Flow BEATS mean-fill! <<<")
+
+    print("\n[6] Saving...")
     trainer.save("results/rcflow_model.pt")
-    print("Model saved to results/rcflow_model.pt")
+    print("    Done: results/rcflow_model.pt")
 
 
-def compute_ls_baseline(data: dict, config: RCFlowConfig) -> float:
-    H_true = data['H_true']
-    H_noisy = data['H_noisy']
-    pilot_mask = data['pilot_mask']
-
-    H_ls = torch.zeros_like(H_noisy)
-    mask_expanded = pilot_mask.unsqueeze(1).expand_as(H_noisy)
-    H_ls[mask_expanded] = H_noisy[mask_expanded]
-
-    error = torch.abs(H_ls - H_true) ** 2
-    power = torch.abs(H_true) ** 2
-    nmse = torch.mean(error) / torch.mean(power)
-    return 10 * torch.log10(nmse).item()
+def compute_nmse(H_est: torch.Tensor, H_true: torch.Tensor) -> float:
+    mse = torch.mean(torch.abs(H_est - H_true) ** 2)
+    power = torch.mean(torch.abs(H_true) ** 2)
+    return 10 * torch.log10(mse / power).item()
 
 
-def compute_oracle_baseline(data: dict, config: RCFlowConfig) -> float:
-    H_true = data['H_true']
-    H_noisy = data['H_noisy']
-
-    error = torch.abs(H_noisy - H_true) ** 2
-    power = torch.abs(H_true) ** 2
-    nmse = torch.mean(error) / torch.mean(power)
-    return 10 * torch.log10(nmse).item()
-
-
-def compute_interpolation_baseline(data: dict, config: RCFlowConfig) -> float:
-    H_true = data['H_true']
-    H_noisy = data['H_noisy']
-    pilot_mask = data['pilot_mask']
-
-    batch_size = H_true.shape[0]
-    H_interp = torch.zeros_like(H_noisy)
-
-    for b in range(batch_size):
-        pilot_indices = torch.where(pilot_mask[b])[0]
-        if len(pilot_indices) == 0:
-            continue
-
-        for rx in range(config.Nr):
-            pilot_values = H_noisy[b, rx, pilot_indices]
-            mean_value = pilot_values.mean()
-            H_interp[b, rx, :] = mean_value
-            H_interp[b, rx, pilot_indices] = pilot_values
-
-    error = torch.abs(H_interp - H_true) ** 2
-    power = torch.abs(H_true) ** 2
-    nmse = torch.mean(error) / torch.mean(power)
-    return 10 * torch.log10(nmse).item()
+def compute_mean_fill(H_observed: torch.Tensor, pilot_mask: torch.Tensor) -> torch.Tensor:
+    H_filled = H_observed.clone()
+    for b in range(H_observed.shape[0]):
+        obs = H_observed[b][pilot_mask[b]]
+        mean_val = obs.mean() if len(obs) > 0 else 0
+        H_filled[b] = torch.where(pilot_mask[b], H_observed[b], mean_val)
+    return H_filled
 
 
 if __name__ == "__main__":

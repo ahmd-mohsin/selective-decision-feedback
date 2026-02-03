@@ -85,12 +85,12 @@ def main():
     print(f"  Device:               {config.device}")
     
     print("\nLoading datasets...")
-    train_dataset = DiffusionDataset(args.train_data, normalize=True)
+    train_dataset = DiffusionDataset(args.train_data, normalize=False)
     print(f"  Training samples: {len(train_dataset)}")
     
     val_dataset = None
     if args.val_data is not None:
-        val_dataset = DiffusionDataset(args.val_data, normalize=True)
+        val_dataset = DiffusionDataset(args.val_data, normalize=False)
         print(f"  Validation samples: {len(val_dataset)}")
     
     print("\nInitializing trainer...")

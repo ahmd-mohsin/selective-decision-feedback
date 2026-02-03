@@ -17,7 +17,7 @@ class DiffusionDataset(Dataset):
     def __init__(
         self,
         hdf5_path: str,
-        normalize: bool = True,
+        normalize: bool = False,
         return_metadata: bool = False
     ):
         self.hdf5_path = hdf5_path
@@ -39,12 +39,14 @@ class DiffusionDataset(Dataset):
     def _normalize_channel(self, H: np.ndarray) -> np.ndarray:
         if not self.normalize:
             return H
-        return (H - self.H_mean) / (self.H_std + 1e-8)
+        H_abs = np.abs(H)
+        H_normalized = H / (self.H_std + 1e-8)
+        return H_normalized
     
     def _denormalize_channel(self, H: np.ndarray) -> np.ndarray:
         if not self.normalize:
             return H
-        return H * self.H_std + self.H_mean
+        return H * self.H_std
     
     def _complex_to_channels(self, x: np.ndarray) -> np.ndarray:
         real = np.real(x)
@@ -60,6 +62,11 @@ class DiffusionDataset(Dataset):
         pilot_mask = self.data['pilot_mask'][idx]
         Y_grid = self.data['Y_grid'][idx]
         noise_var = self.data['noise_var'][idx]
+        
+        if self.normalize:
+            H_true = self._normalize_channel(H_true)
+            H_pilot_full = self._normalize_channel(H_pilot_full)
+            Y_grid = self._normalize_channel(Y_grid)
         
         H_true_channels = self._complex_to_channels(H_true)
         H_pilot_channels = self._complex_to_channels(H_pilot_full)

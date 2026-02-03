@@ -87,15 +87,13 @@ class DiffusionInference:
                 self.model,
                 shape,
                 cond,
-                clip_denoised=True,
                 return_intermediates=True
             )
         else:
             H_recon = self.scheduler.p_sample_loop(
                 self.model,
                 shape,
-                cond,
-                clip_denoised=True
+                cond
             )
         
         if squeeze_output:

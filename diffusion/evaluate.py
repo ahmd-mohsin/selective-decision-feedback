@@ -43,7 +43,7 @@ def main():
     inference = DiffusionInference(args.checkpoint, device=args.device)
     
     print("\nLoading test dataset...")
-    test_dataset = DiffusionDataset(args.test_data, normalize=True)
+    test_dataset = DiffusionDataset(args.test_data, normalize=False)
     
     num_samples = args.num_samples if args.num_samples is not None else len(test_dataset)
     print(f"  Evaluating on {num_samples} samples (use --num_samples to change)")

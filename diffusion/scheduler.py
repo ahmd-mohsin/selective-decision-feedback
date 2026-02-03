@@ -93,15 +93,11 @@ class NoiseScheduler:
         model,
         x_t: torch.Tensor,
         t: torch.Tensor,
-        cond: torch.Tensor,
-        clip_denoised: bool = True
+        cond: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         pred_noise = model(x_t, t, cond)
         
         x_recon = self._predict_start_from_noise(x_t, t, pred_noise)
-        
-        if clip_denoised:
-            x_recon = torch.clamp(x_recon, -1.0, 1.0)
         
         model_mean, posterior_variance, posterior_log_variance = self.q_posterior_mean_variance(
             x_recon, x_t, t
@@ -126,11 +122,10 @@ class NoiseScheduler:
         model,
         x_t: torch.Tensor,
         t: torch.Tensor,
-        cond: torch.Tensor,
-        clip_denoised: bool = True
+        cond: torch.Tensor
     ) -> torch.Tensor:
         model_mean, _, model_log_variance = self.p_mean_variance(
-            model, x_t, t, cond, clip_denoised
+            model, x_t, t, cond
         )
         
         noise = torch.randn_like(x_t)
@@ -145,7 +140,6 @@ class NoiseScheduler:
         model,
         shape: tuple,
         cond: torch.Tensor,
-        clip_denoised: bool = True,
         return_intermediates: bool = False
     ) -> torch.Tensor:
         device = next(model.parameters()).device
@@ -157,7 +151,7 @@ class NoiseScheduler:
         
         for i in reversed(range(self.num_steps)):
             t = torch.full((batch_size,), i, device=device, dtype=torch.long)
-            x_t = self.p_sample(model, x_t, t, cond, clip_denoised)
+            x_t = self.p_sample(model, x_t, t, cond)
             
             if return_intermediates:
                 intermediates.append(x_t)

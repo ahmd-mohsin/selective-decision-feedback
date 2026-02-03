@@ -23,8 +23,8 @@ def main():
     parser.add_argument('--test_data', type=str, required=True,
                        help='Path to test HDF5 dataset')
     
-    parser.add_argument('--num_samples', type=int, default=None,
-                       help='Number of samples to evaluate (default: all)')
+    parser.add_argument('--num_samples', type=int, default=100,
+                       help='Number of samples to evaluate (default: 100)')
     
     parser.add_argument('--device', type=str, default='cuda')
     
@@ -46,12 +46,13 @@ def main():
     test_dataset = DiffusionDataset(args.test_data, normalize=True)
     
     num_samples = args.num_samples if args.num_samples is not None else len(test_dataset)
-    print(f"  Evaluating on {num_samples} samples")
+    print(f"  Evaluating on {num_samples} samples (use --num_samples to change)")
     
     print("\n" + "=" * 70)
     print("COMPUTING METRICS")
     print("=" * 70 + "\n")
     
+    print("Running diffusion sampling (this may take a few minutes)...")
     metrics = inference.evaluate_dataset(test_dataset, num_samples)
     
     print("\nResults:")

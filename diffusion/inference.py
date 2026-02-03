@@ -143,7 +143,9 @@ class DiffusionInference:
         pilot_nmse = 0.0
         count = 0
         
-        for i, batch in enumerate(loader):
+        from tqdm import tqdm
+        
+        for i, batch in enumerate(tqdm(loader, total=num_samples, desc="Evaluating")):
             if i >= num_samples:
                 break
             

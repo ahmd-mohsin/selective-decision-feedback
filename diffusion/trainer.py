@@ -151,7 +151,6 @@ class DiffusionTrainer:
         self.model.eval()
         
         total_loss = 0.0
-        total_nmse = 0.0
         num_batches = 0
         
         for batch in self.val_loader:
@@ -171,23 +170,11 @@ class DiffusionTrainer:
             pred_noise = self.model(H_noisy, t, cond)
             loss = nn.functional.mse_loss(pred_noise, noise)
             
-            H_pred = self.scheduler.p_sample_loop(
-                self.ema_model,
-                H_true.shape,
-                cond,
-                clip_denoised=True
-            )
-            
-            nmse = self._compute_nmse(H_pred, H_true)
-            
             total_loss += loss.item()
-            total_nmse += nmse
             num_batches += 1
         
         metrics = {
-            'val_loss': total_loss / num_batches,
-            'val_nmse': total_nmse / num_batches,
-            'val_nmse_db': 10 * np.log10(total_nmse / num_batches)
+            'val_loss': total_loss / num_batches
         }
         
         return metrics
@@ -226,7 +213,6 @@ class DiffusionTrainer:
             print(f"  Train Loss: {avg_train_loss:.6f}")
             if val_metrics:
                 print(f"  Val Loss: {val_metrics['val_loss']:.6f}")
-                print(f"  Val NMSE: {val_metrics['val_nmse_db']:.2f} dB")
                 
                 for key, value in val_metrics.items():
                     self.writer.add_scalar(f'val/{key}', value, epoch)

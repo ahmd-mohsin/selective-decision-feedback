@@ -177,4 +177,6 @@ Now when I dividedata into factual, time sensitive and subjective then I need di
 
 1. For factual data, e.g math reasoning taks, i can generate 3 to 5  chians perform chain of verification to verify claim A and claim B (parsed and so that they are unbiased) and focus on whatver is correct.
 
-2. The second is time sensitiver. After we have a classifier to idenify if this is a time senisitive question, call specific tools to perform web search if required or scrape information from where ever necessary adn then 
+2. The second is time sensitiver. After we have a classifier to idenify if this is a time senisitive question, call specific tools to perform web search if required or scrape information from where ever necessary adn then perform verification steps and then provide an answer.
+
+3. The third is the most difficult one. "Subjective". Now subjective answers do not have a ground truth answer so its difficult to verify. What our goal in the subjective should be that the model should give its unbiased opinion, irrespective of wehat the uwsers opinion is. Now how do we verify that the model is giving its 

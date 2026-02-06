@@ -44,14 +44,33 @@ class IntegratedEstimator:
         noise_var: Optional[float] = None
     ) -> Dict[str, np.ndarray]:
         
-        from transmission_system.receiver_frontend import pilot_based_channel_estimation
+        num_symbols, num_subcarriers = Y_grid.shape
+        H_pilot = np.zeros_like(Y_grid)
         
-        H_pilot = pilot_based_channel_estimation(
-            Y_grid,
-            X_grid,
-            pilot_mask,
-            method='linear'
-        )
+        for sym_idx in range(num_symbols):
+            pilot_indices = np.where(pilot_mask[sym_idx])[0]
+            
+            if len(pilot_indices) == 0:
+                continue
+            
+            H_pilot[sym_idx, pilot_indices] = Y_grid[sym_idx, pilot_indices] / (X_grid[sym_idx, pilot_indices] + 1e-10)
+            
+            data_indices = np.where(~pilot_mask[sym_idx])[0]
+            
+            for data_idx in data_indices:
+                left_pilots = pilot_indices[pilot_indices < data_idx]
+                right_pilots = pilot_indices[pilot_indices > data_idx]
+                
+                if len(left_pilots) > 0 and len(right_pilots) > 0:
+                    left_idx = left_pilots[-1]
+                    right_idx = right_pilots[0]
+                    
+                    alpha = (data_idx - left_idx) / (right_idx - left_idx)
+                    H_pilot[sym_idx, data_idx] = (1 - alpha) * H_pilot[sym_idx, left_idx] + alpha * H_pilot[sym_idx, right_idx]
+                elif len(left_pilots) > 0:
+                    H_pilot[sym_idx, data_idx] = H_pilot[sym_idx, left_pilots[-1]]
+                elif len(right_pilots) > 0:
+                    H_pilot[sym_idx, data_idx] = H_pilot[sym_idx, right_pilots[0]]
         
         return {
             'H_estimate': H_pilot,
@@ -130,8 +149,31 @@ class IntegratedEstimator:
     ) -> Dict[str, np.ndarray]:
         
         if H_pilot_full is None:
-            from transmission_system.receiver_frontend import pilot_based_channel_estimation
-            H_pilot_full = pilot_based_channel_estimation(Y_grid, X_grid, pilot_mask, method='linear')
+            num_symbols, num_subcarriers = Y_grid.shape
+            H_pilot_full = np.zeros_like(Y_grid)
+            
+            for sym_idx in range(num_symbols):
+                pilot_indices = np.where(pilot_mask[sym_idx])[0]
+                
+                if len(pilot_indices) > 0:
+                    H_pilot_full[sym_idx, pilot_indices] = Y_grid[sym_idx, pilot_indices] / (X_grid[sym_idx, pilot_indices] + 1e-10)
+                    
+                    data_indices = np.where(~pilot_mask[sym_idx])[0]
+                    
+                    for data_idx in data_indices:
+                        left_pilots = pilot_indices[pilot_indices < data_idx]
+                        right_pilots = pilot_indices[pilot_indices > data_idx]
+                        
+                        if len(left_pilots) > 0 and len(right_pilots) > 0:
+                            left_idx = left_pilots[-1]
+                            right_idx = right_pilots[0]
+                            
+                            alpha = (data_idx - left_idx) / (right_idx - left_idx)
+                            H_pilot_full[sym_idx, data_idx] = (1 - alpha) * H_pilot_full[sym_idx, left_idx] + alpha * H_pilot_full[sym_idx, right_idx]
+                        elif len(left_pilots) > 0:
+                            H_pilot_full[sym_idx, data_idx] = H_pilot_full[sym_idx, left_pilots[-1]]
+                        elif len(right_pilots) > 0:
+                            H_pilot_full[sym_idx, data_idx] = H_pilot_full[sym_idx, right_pilots[0]]
         
         if self.diffusion is not None:
             diffusion_result = self.estimate_diffusion_only(Y_grid, H_pilot_full, pilot_mask)

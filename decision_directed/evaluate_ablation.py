@@ -11,6 +11,7 @@ import torch
 from tqdm import tqdm
 import os
 import matplotlib.pyplot as plt
+from typing import Optional
 
 from decision_directed.config import DecisionDirectedConfig
 from decision_directed.pipeline import IntegratedEstimator
@@ -33,10 +34,12 @@ def evaluate_ablation(
         noise_step_size=0.05
     )
     
+    modulation_order = config.get('modulation_order', 16) if isinstance(config, dict) else 16
+    
     estimator = IntegratedEstimator(
         diffusion_checkpoint=diffusion_checkpoint,
         dd_config=dd_config,
-        modulation_order=config.modulation_order,
+        modulation_order=modulation_order,
         device=device
     )
     
@@ -53,27 +56,37 @@ def evaluate_ablation(
         H_true = data['H_true'][idx]
         Y_grid = data['Y_grid'][idx]
         pilot_mask = data['pilot_mask'][idx]
-        H_pilot = data['H_pilot_full'][idx]
-        noise_var = data['noise_var'][idx]
+        H_pilot_precomputed = data['H_pilot_full'][idx]
         
-        X_grid = np.zeros_like(Y_grid)
+        signal_power = np.mean(np.abs(H_true * np.ones_like(H_true))**2)
+        snr_linear = 10**(20.0 / 10.0)
+        noise_var = signal_power / snr_linear
+        
+        X_grid = np.ones_like(Y_grid, dtype=complex)
         pilot_positions = np.where(pilot_mask)
-        X_grid[pilot_positions] = np.exp(1j * np.random.uniform(0, 2*np.pi, len(pilot_positions[0])))
+        if len(pilot_positions[0]) > 0:
+            X_grid[pilot_positions] = Y_grid[pilot_positions] / (H_true[pilot_positions] + 1e-10)
         
-        pilot_result = estimator.estimate_pilot_only(Y_grid, X_grid, pilot_mask, noise_var)
+        data_positions = np.where(~pilot_mask)
+        if len(data_positions[0]) > 0:
+            rng = np.random.default_rng(idx)
+            constellation = estimator.dd_estimator.llr_computer.constellation
+            X_grid[data_positions] = rng.choice(constellation, size=len(data_positions[0]))
+        
+        pilot_result = {'H_estimate': H_pilot_precomputed, 'method': 'pilot_only'}
         nmse_pilot = compute_channel_nmse(pilot_result['H_estimate'], H_true)
         results['pilot_only'].append(nmse_pilot)
         
         if diffusion_checkpoint is not None:
-            diffusion_result = estimator.estimate_diffusion_only(Y_grid, H_pilot, pilot_mask)
+            diffusion_result = estimator.estimate_diffusion_only(Y_grid, H_pilot_precomputed, pilot_mask)
             nmse_diffusion = compute_channel_nmse(diffusion_result['H_estimate'], H_true)
             results['diffusion_only'].append(nmse_diffusion)
         
-        dd_result = estimator.estimate_dd_only(H_pilot, Y_grid, X_grid, pilot_mask, noise_var)
+        dd_result = estimator.estimate_dd_only(H_pilot_precomputed, Y_grid, X_grid, pilot_mask, noise_var)
         nmse_dd = compute_channel_nmse(dd_result['H_estimate'], H_true)
         results['dd_only'].append(nmse_dd)
         
-        full_result = estimator.estimate_full_pipeline(Y_grid, X_grid, pilot_mask, H_pilot, noise_var)
+        full_result = estimator.estimate_full_pipeline(Y_grid, X_grid, pilot_mask, H_pilot_precomputed, noise_var)
         nmse_full = compute_channel_nmse(full_result['H_final'], H_true)
         results['full_pipeline'].append(nmse_full)
     

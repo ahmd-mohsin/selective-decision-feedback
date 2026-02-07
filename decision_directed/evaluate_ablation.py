@@ -57,21 +57,11 @@ def evaluate_ablation(
         Y_grid = data['Y_grid'][idx]
         pilot_mask = data['pilot_mask'][idx]
         H_pilot_precomputed = data['H_pilot_full'][idx]
+        X_grid = data['X_grid'][idx]
         
-        signal_power = np.mean(np.abs(H_true * np.ones_like(H_true))**2)
-        snr_linear = 10**(20.0 / 10.0)
-        noise_var = signal_power / snr_linear
-        
-        X_grid = np.ones_like(Y_grid, dtype=complex)
         pilot_positions = np.where(pilot_mask)
-        if len(pilot_positions[0]) > 0:
-            X_grid[pilot_positions] = Y_grid[pilot_positions] / (H_true[pilot_positions] + 1e-10)
-        
-        data_positions = np.where(~pilot_mask)
-        if len(data_positions[0]) > 0:
-            rng = np.random.default_rng(idx)
-            constellation = estimator.dd_estimator.llr_computer.constellation
-            X_grid[data_positions] = rng.choice(constellation, size=len(data_positions[0]))
+        pilot_errors = Y_grid[pilot_positions] - H_pilot_precomputed[pilot_positions] * X_grid[pilot_positions]
+        noise_var = np.mean(np.abs(pilot_errors)**2)
         
         pilot_result = {'H_estimate': H_pilot_precomputed, 'method': 'pilot_only'}
         nmse_pilot = compute_channel_nmse(pilot_result['H_estimate'], H_true)

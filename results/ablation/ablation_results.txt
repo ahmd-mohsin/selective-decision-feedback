@@ -4,7 +4,7 @@ Ablation Study Results
 Method                    NMSE (dB)       Std Dev (dB)    Samples   
 --------------------------------------------------------------------------------
 Pilot Only                -16.15          2.11            100       
-Diffusion Only            -23.83          0.48            100       
+Diffusion Only            -23.88          0.52            100       
 Dd Only                   -16.14          2.11            100       
-Full Pipeline             -23.86          0.52            100       
+Full Pipeline             -23.86          0.53            100       
 

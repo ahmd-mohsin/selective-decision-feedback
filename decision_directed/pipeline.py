@@ -197,12 +197,50 @@ class IntegratedEstimator:
             H_with_pseudopilots = dd_result_pre['H_dd']
             augmented_mask = dd_result_pre['augmented_pilot_mask']
             
-            # Only augment if we got reasonable acceptance rate (not everything, not nothing)
+            # CRITICAL: Cap pilot density to avoid overwhelming the diffusion model
+            # The model was trained on 25% pilots - too many pilots degrades performance
+            current_density = np.sum(augmented_mask) / augmented_mask.size
+            max_pilot_density = 0.60  # Cap at 60% pilot density
+            
             avg_accept = np.mean(dd_result_pre['acceptance_rates'])
-            if 0.3 < avg_accept < 0.95:
+            
+            if current_density > max_pilot_density:
+                # Too many pilots - randomly sample to reduce density
+                num_original_pilots = np.sum(pilot_mask)
+                target_total_pilots = int(max_pilot_density * augmented_mask.size)
+                max_pseudo_pilots = target_total_pilots - num_original_pilots
+                
+                # Get DD positions
+                dd_positions = dd_result_pre['dd_mask']
+                num_dd_pilots = np.sum(dd_positions)
+                
+                if num_dd_pilots > max_pseudo_pilots:
+                    # Need to subsample - keep the most reliable ones
+                    # Flatten and get indices
+                    dd_flat = dd_positions.flatten()
+                    dd_indices = np.where(dd_flat)[0]
+                    
+                    # Randomly select subset (could also use LLR scores for smarter selection)
+                    np.random.seed(42)
+                    selected = np.random.choice(dd_indices, size=max_pseudo_pilots, replace=False)
+                    
+                    # Create new mask
+                    augmented_mask_reduced = pilot_mask.copy()
+                    dd_mask_reduced = np.zeros_like(dd_positions)
+                    dd_mask_flat = dd_mask_reduced.flatten()
+                    dd_mask_flat[selected] = True
+                    dd_mask_reduced = dd_mask_flat.reshape(dd_positions.shape)
+                    augmented_mask_reduced[dd_mask_reduced] = True
+                    
+                    augmented_mask = augmented_mask_reduced
+                    current_density = np.sum(augmented_mask) / augmented_mask.size
+            
+            # Only use augmented pilots if acceptance is reasonable (not too few, not everything)
+            if 0.2 < avg_accept < 0.95 and current_density <= max_pilot_density:
                 diffusion_result = self.estimate_diffusion_only(Y_grid, H_with_pseudopilots, augmented_mask)
                 H_final = diffusion_result['H_estimate']
             else:
+                # Fall back to original pilot mask
                 diffusion_result = self.estimate_diffusion_only(Y_grid, H_pilot_full, pilot_mask)
                 H_final = diffusion_result['H_estimate']
             

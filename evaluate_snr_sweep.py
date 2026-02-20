@@ -45,7 +45,7 @@ def evaluate_at_snr(
     
     # Setup estimator
     dd_config = DecisionDirectedConfig(
-        llr_threshold=8.0,
+        llr_threshold=12.0,  # Higher threshold to be more selective
         adaptive_threshold=False
     )
     

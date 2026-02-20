@@ -23,7 +23,8 @@ def evaluate_ablation(
     dataset_path: str,
     diffusion_checkpoint: Optional[str],
     num_samples: int = 100,
-    device: str = 'cuda'
+    device: str = 'cuda',
+    num_iterations: int = 2
 ):
     
     data, config = load_dataset_hdf5(dataset_path)
@@ -47,7 +48,8 @@ def evaluate_ablation(
         'pilot_only': [],
         'diffusion_only': [],
         'dd_only': [],
-        'full_pipeline': []
+        'full_pipeline': [],
+        'acceptance_rates': []
     }
     
     num_samples = min(num_samples, data['H_true'].shape[0])
@@ -76,9 +78,15 @@ def evaluate_ablation(
         nmse_dd = compute_channel_nmse(dd_result['H_estimate'], H_true)
         results['dd_only'].append(nmse_dd)
         
-        full_result = estimator.estimate_full_pipeline(Y_grid, X_grid, pilot_mask, H_pilot_precomputed, noise_var)
+        full_result = estimator.estimate_full_pipeline(
+            Y_grid, X_grid, pilot_mask, H_pilot_precomputed, noise_var, 
+            num_iterations=num_iterations
+        )
         nmse_full = compute_channel_nmse(full_result['H_final'], H_true)
         results['full_pipeline'].append(nmse_full)
+        
+        if 'acceptance_rates' in full_result:
+            results['acceptance_rates'].append(np.mean(full_result['acceptance_rates']))
     
     return results
 
@@ -153,6 +161,7 @@ def main():
     parser.add_argument('--num_samples', type=int, default=100)
     parser.add_argument('--device', type=str, default='cuda')
     parser.add_argument('--output_dir', type=str, default='./results/ablation')
+    parser.add_argument('--num_iterations', type=int, default=2, help='Number of DD-Diffusion iterations')
     
     args = parser.parse_args()
     
@@ -166,6 +175,7 @@ def main():
     print(f"  Dataset: {args.dataset}")
     print(f"  Diffusion Checkpoint: {args.diffusion_checkpoint}")
     print(f"  Num Samples: {args.num_samples}")
+    print(f"  Num Iterations: {args.num_iterations}")
     print(f"  Device: {args.device}")
     
     print("\n" + "=" * 70)
@@ -176,7 +186,8 @@ def main():
         args.dataset,
         args.diffusion_checkpoint,
         args.num_samples,
-        args.device
+        args.device,
+        args.num_iterations
     )
     
     print("\n" + "=" * 70)
@@ -184,11 +195,15 @@ def main():
     print("=" * 70 + "\n")
     
     for method, nmse_list in results.items():
-        if len(nmse_list) > 0:
+        if len(nmse_list) > 0 and method != 'acceptance_rates':
             nmse_db = 10 * np.log10(nmse_list)
             mean_nmse = np.mean(nmse_db)
             std_nmse = np.std(nmse_db)
             print(f"{method.replace('_', ' ').title():<25} {mean_nmse:>10.2f} dB  (±{std_nmse:.2f} dB)")
+    
+    if len(results['acceptance_rates']) > 0:
+        avg_acceptance = np.mean(results['acceptance_rates'])
+        print(f"\nAverage Acceptance Rate: {avg_acceptance*100:.2f}%")
     
     print("\n" + "=" * 70)
     print("SAVING RESULTS")

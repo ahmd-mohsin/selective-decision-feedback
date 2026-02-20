@@ -44,6 +44,8 @@ class DecisionDirectedEstimator:
         
         dd_mask = np.zeros((num_symbols, num_subcarriers), dtype=bool)
         X_decisions = np.zeros((num_symbols, num_subcarriers), dtype=complex)
+        H_refined = H_initial.copy()
+        augmented_pilot_mask = pilot_mask.copy()
         
         for sym_idx in range(num_symbols):
             data_mask = ~pilot_mask[sym_idx]
@@ -51,7 +53,7 @@ class DecisionDirectedEstimator:
             if not np.any(data_mask):
                 continue
             
-            H_current = tracker.normalizers[sym_idx] * H_initial[sym_idx]
+            H_current = H_refined[sym_idx]
             
             Y_equalized = np.zeros(num_subcarriers, dtype=complex)
             Y_equalized[data_mask] = Y_grid[sym_idx, data_mask] / (H_current[data_mask] + 1e-10)
@@ -72,23 +74,11 @@ class DecisionDirectedEstimator:
             dd_mask[sym_idx, accepted_indices] = True
             X_decisions[sym_idx, accepted_indices] = hard_decisions[reliable_mask]
             
-            errors = []
-            for idx, sub_idx in enumerate(accepted_indices):
-                decision = hard_decisions[reliable_mask][idx]
-                error = Y_grid[sym_idx, sub_idx] - H_current[sub_idx] * decision
+            if len(accepted_indices) > 0:
+                for idx, decision in zip(accepted_indices, hard_decisions[reliable_mask]):
+                    H_refined[sym_idx, idx] = Y_grid[sym_idx, idx] / (decision + 1e-10)
                 
-                tracker.update_normalizer(
-                    sym_idx,
-                    sub_idx,
-                    error,
-                    decision,
-                    H_initial[sym_idx, sub_idx]
-                )
-                
-                errors.append(error)
-            
-            if errors:
-                tracker.update_noise_variance(sym_idx, np.array(errors))
+                augmented_pilot_mask[sym_idx, accepted_indices] = True
             
             acceptance_rate = np.sum(reliable_mask) / np.sum(data_mask) if np.sum(data_mask) > 0 else 0.0
             tracker.acceptance_history.append(acceptance_rate)
@@ -96,11 +86,10 @@ class DecisionDirectedEstimator:
             if self.config.adaptive_threshold:
                 self._adapt_threshold(acceptance_rate)
         
-        H_refined = tracker.get_refined_channel(H_initial)
-        
         return {
             'H_dd': H_refined,
             'dd_mask': dd_mask,
+            'augmented_pilot_mask': augmented_pilot_mask,
             'X_dd': X_decisions,
             'Y_dd': Y_grid * dd_mask,
             'noise_var': tracker.noise_var,

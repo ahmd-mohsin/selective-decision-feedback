@@ -145,7 +145,8 @@ class IntegratedEstimator:
         X_grid: np.ndarray,
         pilot_mask: np.ndarray,
         H_pilot_full: Optional[np.ndarray] = None,
-        noise_var: Optional[float] = None
+        noise_var: Optional[float] = None,
+        num_iterations: int = 2
     ) -> Dict[str, np.ndarray]:
         
         if H_pilot_full is None:
@@ -181,24 +182,46 @@ class IntegratedEstimator:
         else:
             H_diffusion = H_pilot_full
         
-        dd_result = self.dd_estimator.estimate(
-            H_diffusion,
-            Y_grid,
-            X_grid,
-            pilot_mask,
-            noise_var
-        )
+        H_current = H_diffusion
+        current_pilot_mask = pilot_mask.copy()
+        all_dd_masks = []
+        all_acceptance_rates = []
+        
+        for iteration in range(num_iterations):
+            dd_result = self.dd_estimator.estimate(
+                H_current,
+                Y_grid,
+                X_grid,
+                pilot_mask,
+                noise_var
+            )
+            
+            all_dd_masks.append(dd_result['dd_mask'])
+            all_acceptance_rates.append(dd_result['acceptance_rates'])
+            
+            augmented_mask = dd_result['augmented_pilot_mask']
+            
+            if self.diffusion is not None and iteration < num_iterations - 1:
+                H_augmented = dd_result['H_dd']
+                diffusion_result = self.estimate_diffusion_only(Y_grid, H_augmented, augmented_mask)
+                H_current = diffusion_result['H_estimate']
+                current_pilot_mask = augmented_mask
+            else:
+                H_current = dd_result['H_dd']
         
         return {
             'H_pilot': H_pilot_full,
             'H_diffusion': H_diffusion,
-            'H_final': dd_result['H_dd'],
+            'H_final': H_current,
             'dd_mask': dd_result['dd_mask'],
+            'augmented_pilot_mask': dd_result['augmented_pilot_mask'],
             'X_dd': dd_result['X_dd'],
             'Y_dd': dd_result['Y_dd'],
             'normalizers': dd_result['normalizers'],
             'acceptance_rates': dd_result['acceptance_rates'],
+            'all_acceptance_rates': all_acceptance_rates,
             'noise_var': dd_result['noise_var'],
             'statistics': dd_result['statistics'],
+            'num_iterations': num_iterations,
             'method': 'full_pipeline'
         }

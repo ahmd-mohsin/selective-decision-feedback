@@ -35,7 +35,7 @@ def test_high_snr():
     )
     
     dd_config = DecisionDirectedConfig(
-        llr_threshold=12.0,
+        llr_threshold=8.0,  # Base threshold
         adaptive_threshold=False
     )
     

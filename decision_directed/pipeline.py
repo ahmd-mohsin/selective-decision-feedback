@@ -146,7 +146,8 @@ class IntegratedEstimator:
         pilot_mask: np.ndarray,
         H_pilot_full: Optional[np.ndarray] = None,
         noise_var: Optional[float] = None,
-        num_iterations: int = 2
+        num_iterations: int = 2,
+        use_dd_before_diffusion: bool = True
     ) -> Dict[str, np.ndarray]:
         
         if H_pilot_full is None:
@@ -176,6 +177,53 @@ class IntegratedEstimator:
                         elif len(right_pilots) > 0:
                             H_pilot_full[sym_idx, data_idx] = H_pilot_full[sym_idx, right_pilots[0]]
         
+        # NEW APPROACH: Use DD on pilot interpolation to create pseudo-pilots BEFORE diffusion
+        if use_dd_before_diffusion and self.diffusion is not None:
+            # Estimate noise from data positions (more realistic)
+            data_positions = ~pilot_mask
+            data_errors = Y_grid[data_positions] - H_pilot_full[data_positions] * X_grid[data_positions]
+            noise_var_dd = np.mean(np.abs(data_errors)**2)
+            noise_var_dd = max(noise_var_dd, 1e-3)  # Use reasonable floor
+            
+            dd_result_pre = self.dd_estimator.estimate(
+                H_pilot_full,
+                Y_grid,
+                X_grid,
+                pilot_mask,
+                noise_var_dd
+            )
+            
+            # Use augmented mask (with pseudo-pilots) as input to diffusion
+            H_with_pseudopilots = dd_result_pre['H_dd']
+            augmented_mask = dd_result_pre['augmented_pilot_mask']
+            
+            # Only augment if we got reasonable acceptance rate (not everything, not nothing)
+            avg_accept = np.mean(dd_result_pre['acceptance_rates'])
+            if 0.3 < avg_accept < 0.95:
+                diffusion_result = self.estimate_diffusion_only(Y_grid, H_with_pseudopilots, augmented_mask)
+                H_final = diffusion_result['H_estimate']
+            else:
+                diffusion_result = self.estimate_diffusion_only(Y_grid, H_pilot_full, pilot_mask)
+                H_final = diffusion_result['H_estimate']
+            
+            return {
+                'H_pilot': H_pilot_full,
+                'H_diffusion': H_final,
+                'H_final': H_final,
+                'dd_mask': dd_result_pre['dd_mask'],
+                'augmented_pilot_mask': augmented_mask,
+                'X_dd': dd_result_pre['X_dd'],
+                'Y_dd': dd_result_pre['Y_dd'],
+                'normalizers': dd_result_pre['normalizers'],
+                'acceptance_rates': dd_result_pre['acceptance_rates'],
+                'all_acceptance_rates': [dd_result_pre['acceptance_rates']],
+                'noise_var': dd_result_pre['noise_var'],
+                'statistics': dd_result_pre['statistics'],
+                'num_iterations': 1,
+                'method': 'full_pipeline'
+            }
+        
+        # OLD APPROACH (kept for compatibility)
         if self.diffusion is not None:
             diffusion_result = self.estimate_diffusion_only(Y_grid, H_pilot_full, pilot_mask)
             H_diffusion = diffusion_result['H_estimate']
@@ -188,24 +236,30 @@ class IntegratedEstimator:
         all_acceptance_rates = []
         
         for iteration in range(num_iterations):
+            # ALWAYS recompute noise variance from current channel estimate at pilot positions
+            pilot_positions = np.where(pilot_mask)
+            current_noise_errors = Y_grid[pilot_positions] - H_current[pilot_positions] * X_grid[pilot_positions]
+            noise_var_for_dd = np.mean(np.abs(current_noise_errors)**2)
+            noise_var_for_dd = max(noise_var_for_dd, 1e-6)  # Floor to avoid division by zero
+            
             dd_result = self.dd_estimator.estimate(
                 H_current,
                 Y_grid,
                 X_grid,
                 pilot_mask,
-                noise_var
+                noise_var_for_dd
             )
             
             all_dd_masks.append(dd_result['dd_mask'])
             all_acceptance_rates.append(dd_result['acceptance_rates'])
             
-            augmented_mask = dd_result['augmented_pilot_mask']
-            
-            if self.diffusion is not None and iteration < num_iterations - 1:
+            # For the final iteration, use the DD result directly
+            # DO NOT feed augmented mask back to diffusion (it makes it worse!)
+            if iteration < num_iterations - 1 and self.diffusion is not None:
+                # Use DD refined channel but KEEP ORIGINAL pilot mask for diffusion
                 H_augmented = dd_result['H_dd']
-                diffusion_result = self.estimate_diffusion_only(Y_grid, H_augmented, augmented_mask)
+                diffusion_result = self.estimate_diffusion_only(Y_grid, H_augmented, pilot_mask)
                 H_current = diffusion_result['H_estimate']
-                current_pilot_mask = augmented_mask
             else:
                 H_current = dd_result['H_dd']
         

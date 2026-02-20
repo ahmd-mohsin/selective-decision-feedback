@@ -30,9 +30,10 @@ def evaluate_ablation(
     data, config = load_dataset_hdf5(dataset_path)
     
     dd_config = DecisionDirectedConfig(
-        llr_threshold=4.0,
+        llr_threshold=8.0,  # Increased from 4.0 to be more conservative
         normalizer_step_size=0.01,
-        noise_step_size=0.05
+        noise_step_size=0.05,
+        adaptive_threshold=False  # Disable adaptive threshold for consistency
     )
     
     modulation_order = config.get('modulation_order', 16) if isinstance(config, dict) else 16
@@ -80,7 +81,7 @@ def evaluate_ablation(
         
         full_result = estimator.estimate_full_pipeline(
             Y_grid, X_grid, pilot_mask, H_pilot_precomputed, noise_var, 
-            num_iterations=num_iterations
+            num_iterations=num_iterations, use_dd_before_diffusion=True
         )
         nmse_full = compute_channel_nmse(full_result['H_final'], H_true)
         results['full_pipeline'].append(nmse_full)
